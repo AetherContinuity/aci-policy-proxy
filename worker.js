@@ -130,7 +130,11 @@ async function hankeikkunaSince(since, tyyppi) {
 
 // ─────────────────────────────────────────────────────────────
 // 2. EDUSKUNTA   api.eduskunta.fi/api/v1
-//    /search?q=<json>   ·  /tables/{Table}/rows?...
+//    /search?q=<json>   — the only confirmed-working route on this host.
+//    /tables/{Table}/rows does NOT exist here: 404s, and the host root
+//    returns an S3 AccessDenied, i.e. no table API at this base at all.
+//    (Was wrongly documented as working — removed rather than left broken.
+//    avoindata.eduskunta.fi is the likely real host; unconfirmed.)
 // ─────────────────────────────────────────────────────────────
 
 async function edkSearch(q) {
@@ -186,17 +190,6 @@ async function fetchAsia(tunnus) {
   };
 }
 
-// Raw passthrough — table names never need baking in.
-async function fetchEduskunta(path, query) {
-  const url = `${EDK_BASE}/${path}${query ? '?' + query : ''}`;
-  const r = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': UA } });
-  const text = await r.text();
-  if (!r.ok) throw new Error(`Eduskunta ${path}: ${r.status} ${text.slice(0, 300)}`);
-  let j; try { j = JSON.parse(text); } catch { j = { raw: text }; }
-  return { upstream: url, source: 'Eduskunnan avoin data',
-           fetched: new Date().toISOString(), data: j };
-}
-
 // ─────────────────────────────────────────────────────────────
 // 3. FINLEX   opendata.finlex.fi/finlex/avoindata/v1
 //    Akoma Ntoso XML. TLS 1.2+. No registration. 429 on rate limit.
@@ -238,8 +231,7 @@ const INDEX = {
     paging: 'cursor-based: size (1..10000) + searchAfter, not page numbers'
   },
   eduskunta: {
-    asia: '?asia=VNS 8/2025   — käsittelyaikajana + mietinnöt + lausunnot',
-    raw:  '?edk=tables/<Table>/rows&perPage=100&page=0'
+    asia: '?asia=VNS 8/2025   — käsittelyaikajana + mietinnöt + lausunnot'
   },
   finlex: {
     raw: '?fx=akn/fi/act/statute/2024/123/fin@   — Akoma Ntoso XML',
@@ -284,10 +276,6 @@ export default {
       // Eduskunta
       const asia = p.get('asia');
       if (asia) return Response.json(await fetchAsia(asia), { headers: CORS });
-
-      const edk = p.get('edk');
-      if (edk) return Response.json(
-        await fetchEduskunta(edk, pass(['edk', 'series'])), { headers: CORS });
 
       // Finlex
       const fx = p.get('fx');
