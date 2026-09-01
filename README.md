@@ -9,7 +9,7 @@ not reachable from sandboxed tooling, and two of them need request shapes
 
 | Source | Base | Data class |
 |---|---|---|
-| Valtioneuvoston Hankeikkuna | `api.hankeikkuna.fi/api/v1` | self-reported process data |
+| Valtioneuvoston Hankeikkuna | `api.hankeikkuna.fi/api/v2` | self-reported process data |
 | Eduskunta | `api.eduskunta.fi/api/v1` | events — dates authoritative |
 | Finlex | `opendata.finlex.fi/finlex/avoindata/v1` | authoritative |
 
@@ -34,15 +34,29 @@ No args returns the route index.
 ## kohteet/haku body fields
 
 `tyyppi` HANKE | LAINSAADANTO | TOIMIELIN | STRATEGIA ·
-`tila` e.g. KAYNNISSA · `tunnus` e.g. `VNK:500:2014` ·
-`asiasanat` YSO/JUHO URIs · `teksti` (string) ·
-`muokattuPaivaAlku` / `muokattuPaivaLoppu` as `YYYY-MM-DDTHH:MM:SS` — **no Z**.
+`tila` SUUNNITTEILLA | KAYNNISSA | PAATTYNYT ·
+`valmisteluvaihe` ESIVALMISTELU | PERUSVALMISTELU | LAUSUNTOMENETTELY |
+JATKOVALMISTELU | VALTIONEUVOSTON_PAATOKSENTEKO | EDUSKUNTAKASITTELY |
+LAIN_VAHVISTAMINEN | KESKEYTETTY | VALMISTUNUT ·
+`lainsaadantoTehtavaluokka`, `etappiTyyppi`, `toimielinTyyppi`,
+`strategiaTyyppi` — see spec ·
+`tunnus` e.g. `VNK:500:2014` · `asiasanat` YSO/JUHO URIs · `teksti` (string) ·
+`asettamisPaivaAlku/Loppu`, `muokattuPaivaAlku/Loppu`,
+`etappiAlkamisPaivaAlku/Loppu` as `YYYY-MM-DDTHH:MM:SS` — **no Z**.
 
-## Known trap
+Paging is **cursor-based**: `size` (1..10000) plus `searchAfter`. Not pages.
 
-`hallitusohjelmat/karkihankkeet|painopistealueet|toimenpiteet` are the
-Sipilä-era data model. The current model is *toimintasuunnitelma* with
-*elementit* and *välitavoitteet*; its endpoints are not in the official
-testausohje (2017). Verify at <https://api.hankeikkuna.fi/api> (Swagger).
+## Known traps
+
+1. **Base is `/api/v2`.** The official testausohje PDF documents `/api/v1`,
+   which 404s with `No static resource`. The live OpenAPI 3.1 spec at
+   <https://api.hankeikkuna.fi/api/api-docs> is authoritative; the PDF is not.
+2. `hallitusohjelmat/karkihankkeet|painopistealueet|toimenpiteet` are the
+   Sipilä-era model and still served. The current model is
+   `hallitusohjelmat/rakenneElementit/haku` (POST) plus
+   `rakenneElementtiTyypit` and `valitavoiteTyypit`.
+3. `valmisteluvaihe` is the useful field for pipeline work: it exposes the
+   whole chain esivalmistelu → lausuntomenettely → eduskuntakäsittely →
+   lain vahvistaminen as a machine-readable enum.
 
 Fetched values are re-queryable and do not belong in memory; this interface does.
