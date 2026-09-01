@@ -74,13 +74,41 @@ EDUSKUNTAKASITTELY-stage LAINSAADANTO hits in one test run.
 4. **Response fields are nested, not flat.** See "kohteet/haku response
    shape" above — a parser expecting `.tunnus` or `.valmisteluvaihe` at the
    root gets `undefined` silently. Same trap shape as PxWeb's `category.index`.
-5. **No HE-tunnus on the kohde.** None of the LAINSAADANTO hits carry an
-   Eduskunta HE-number, so `?asia=HE x/2026` can't be joined directly off
-   `kohteet/haku` results. `kohde.asianumerot` is the better anchor instead
-   of the nimeke text: it's a structured VN-diaarinumero (e.g.
-   `VN/30707/2025`), present on every hit tested, and stable for the life of
-   the case — but it has not yet been confirmed to match anything on the
-   Eduskunta side. That match is the open question for joining this proxy's
-   two halves; it needs testing against `?edk=`, not more Hankeikkuna reading.
+5. **No HE-tunnus on the kohde, and the join to Eduskunta is still open.**
+   None of the LAINSAADANTO hits carry an Eduskunta HE-number, so
+   `?asia=HE x/2026` can't be built directly off `kohteet/haku` results.
+   `kohde.asianumerot` is a structured VN-diaarinumero (e.g.
+   `VN/30707/2025`), present on every hit tested, stable for the case's
+   lifecycle, and a solid anchor **within** Hankeikkuna — but it does not
+   carry over to Eduskunta. Confirmed dead end: `?asia=` (Eduskunnan
+   `search`, property `teksti`) returns **0 hits** both for the VN-number
+   and for the plain-language nimeke text — `teksti` does not do free-text
+   matching the way the name implies. `eduskuntatunnus` lookups work fine
+   once the HE-number is already known (`HE 100/2026`, `VNS 8/2025` both
+   returned full aikajana). Two untried paths, neither ruled in or out:
+   `?edk=tables/VaskiData/rows` may carry the VN-number in document
+   metadata, or the `valtiopaivaasia` category may accept some other
+   `search` property than `teksti` — worth asking the API directly rather
+   than guessing further.
+
+## Etappi cross-check: jumissa vs. kirjanpitovelka
+
+An overdue `etapit` entry (`saavutettu: false`, past `etappiLoppu`) is
+**not by itself** a stalled project — most of the time it's just a stage
+nobody flagged done after the project moved on. The two cases are only
+distinguishable by ordinal position, using the order `tyypit/kohteenValmisteluvaiheet`
+returns:
+
+- **Jumissa (stalled):** the overdue etappi's `valmisteluvaihe` **equals**
+  the kohde's current `valmisteluvaihe`. The project hasn't moved past the
+  stage it's late on.
+- **Kirjanpitovelka (bookkeeping lag):** the kohde's current
+  `valmisteluvaihe` is **ahead of** the overdue etappi's stage. It's stale
+  data, not a stuck project.
+
+Measured on the 33 EDUSKUNTAKASITTELY-stage LAINSAADANTO hits (one test
+run): 2 jumissa, 10 kirjanpitovelkaa, 21 with no overdue etappi. Without
+this ordinal check every one of the 12 overdue cases looks like an alarm;
+with it, only 2 are.
 
 Fetched values are re-queryable and do not belong in memory; this interface does.
