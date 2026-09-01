@@ -1,0 +1,259 @@
+// aci-policy-proxy
+// Valtionhallinnon rajapinnat: Hankeikkuna, Eduskunta, Finlex.
+//
+// NOTE ON DATA CLASS: unlike the Fingrid / Eurostat / ECB proxies, most of
+// what this worker returns is SELF-REPORTED PROCESS DATA — a ministry's own
+// account of its own work. Hankeikkuna "etapit" and schedules are reported,
+// not measured. Eduskunta sitting and voting dates ARE events, and Finlex
+// statute numbers ARE authoritative. Cross-check reported schedules against
+// those two rather than trusting them directly.
+
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type'
+};
+
+const UA = 'curl/8.5.0';
+
+const HI_BASE     = 'https://api.hankeikkuna.fi/api/v1';
+const EDK_BASE    = 'https://api.eduskunta.fi/api/v1';
+const FINLEX_BASE = 'https://opendata.finlex.fi/finlex/avoindata/v1';
+
+// ─────────────────────────────────────────────────────────────
+// 1. HANKEIKKUNA   api.hankeikkuna.fi/api/v1     CC BY 4.0
+//
+// Verified GET paths (official testausohje):
+//   asettajat  ·  asettajat/uuid/{uuid}
+//   kohteet/uuid/{uuid}  ·  henkilot/uuid/{uuid}
+//   hallitusohjelmat/karkihankkeet | painopistealueet | toimenpiteet
+//     ^^ SIPILÄ-ERA MODEL. Current model is toimintasuunnitelma with
+//        elementit + välitavoitteet; its endpoints are NOT in the
+//        testausohje (which dates from 2017). Check Swagger at
+//        https://api.hankeikkuna.fi/api before relying on them.
+// Verified POST paths:  kohteet/haku  ·  henkilot/haku
+//
+// kohteet/haku body (all optional; arrays unless noted):
+//   tyyppi    HANKE | LAINSAADANTO | TOIMIELIN | STRATEGIA
+//   tila      e.g. KAYNNISSA   (full enum in Swagger > KohdeSearchFormData)
+//   tunnus    e.g. "VNK:500:2014"
+//   asiasanat YSO/JUHO URIs, e.g. "http://www.yso.fi/onto/yso/p2538"
+//   teksti    free text (STRING, not array)
+//   muokattuPaivaAlku / muokattuPaivaLoppu  "YYYY-MM-DDTHH:MM:SS"  (no Z)
+// Response carries size + totalHits.
+// ─────────────────────────────────────────────────────────────
+
+const HI_SHORTCUT = {
+  'HI-ASETTAJAT': { method: 'GET',  path: 'asettajat' },
+  'HI-KARKI':     { method: 'GET',  path: 'hallitusohjelmat/karkihankkeet' },
+  'HI-PAINOPIST': { method: 'GET',  path: 'hallitusohjelmat/painopistealueet' },
+  'HI-TOIMENPIT': { method: 'GET',  path: 'hallitusohjelmat/toimenpiteet' },
+  'HI-LAIT':      { method: 'POST', path: 'kohteet/haku',
+                    body: { tyyppi: ['LAINSAADANTO'], tila: ['KAYNNISSA'] } },
+  'HI-KAYNNISSA': { method: 'POST', path: 'kohteet/haku',
+                    body: { tila: ['KAYNNISSA'] } }
+};
+
+async function fetchHankeikkuna(path, { method = 'GET', body = null, query = '' } = {}) {
+  const url = `${HI_BASE}/${path}${query ? '?' + query : ''}`;
+  const r = await fetch(url, {
+    method,
+    headers: {
+      Accept: 'application/json', 'User-Agent': UA,
+      ...(body ? { 'Content-Type': 'application/json' } : {})
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`Hankeikkuna ${method} ${path}: ${r.status} ${text.slice(0, 300)}`);
+  let j; try { j = JSON.parse(text); } catch { j = { raw: text }; }
+  return {
+    upstream: url, method,
+    source: 'Valtioneuvoston Hankeikkuna (CC BY 4.0)',
+    data_class: 'self-reported process data',
+    fetched: new Date().toISOString(),
+    totalHits: j.totalHits, size: j.size,
+    data: j
+  };
+}
+
+// Incremental fetch: only what changed since `since` (ISO, no Z).
+async function hankeikkunaSince(since, tyyppi) {
+  const body = { muokattuPaivaAlku: since };
+  if (tyyppi) body.tyyppi = Array.isArray(tyyppi) ? tyyppi : [tyyppi];
+  return fetchHankeikkuna('kohteet/haku', { method: 'POST', body });
+}
+
+// ─────────────────────────────────────────────────────────────
+// 2. EDUSKUNTA   api.eduskunta.fi/api/v1
+//    /search?q=<json>   ·  /tables/{Table}/rows?...
+// ─────────────────────────────────────────────────────────────
+
+async function edkSearch(q) {
+  const url = `${EDK_BASE}/search?q=${encodeURIComponent(JSON.stringify(q))}`;
+  const r = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': UA } });
+  if (!r.ok) throw new Error(`Eduskunta search: ${r.status}`);
+  return { url, json: await r.json() };
+}
+
+// Generalised from the old hardcoded VNS 8/2025 handler.
+// tunnus e.g. "VNS 8/2025", "HE 12/2026", "LA 3/2025"
+async function fetchAsia(tunnus) {
+  const { url, json } = await edkSearch({
+    category: 'valtiopaivaasia',
+    maxResults: 1,
+    startFromIndex: 0,
+    expression: { and: [{ property: 'eduskuntatunnus', match: tunnus }] }
+  });
+  const asia = json.results?.[0]?.valtiopaivaasia;
+  if (!asia) throw new Error(`Valtiopäiväasia not found: ${tunnus}`);
+
+  const kasittelyt = asia.kasittelyt?.fi || [];
+  const asiakirjat = asia.keskeisetAsiakirjat?.fi || [];
+  const mietinnot  = asiakirjat.filter(a => /VM$/.test(a.asiakirjatyyppikoodi || ''));
+  const lausunnot  = asiakirjat.filter(a => /VL$/.test(a.asiakirjatyyppikoodi || ''));
+
+  return {
+    upstream: url,
+    source: 'Eduskunnan avoin data',
+    data_class: 'events (dates are authoritative)',
+    fetched: new Date().toISOString(),
+    eduskuntatunnus: tunnus,
+    nimeke: asia.nimeke?.fi || '',
+    tila: asia.tila?.fi || 'tuntematon',
+    viimeisinKasittelyvaihe: asia.viimeisinKasittelyvaihe?.fi || 'ei tietoa',
+    mietinnot: mietinnot.map(m => ({
+      tyyppi: m.asiakirjatyyppikoodi, valiokunta: m.valiokuntanimi,
+      edktunnus: m.edktunnus, laadintapvm: m.laadintapvm,
+      nimeketeksti: m.nimeketeksti, htmlSaatavilla: m.htmlSaatavilla
+    })),
+    lausunnot: lausunnot.map(l => ({
+      valiokunta: l.valiokuntanimi, edktunnus: l.edktunnus, laadintapvm: l.laadintapvm
+    })),
+    // Full stage timeline — this is the cross-check against Hankeikkuna's
+    // self-reported schedule.
+    kasittelyvaiheetLkm: kasittelyt.length,
+    aikajana: kasittelyt.map(k => ({
+      pvm: k.tapahtumapvm, vaihe: k.kasittelyvaihe
+    })),
+    viimeisinKasittely: kasittelyt.length
+      ? { pvm: kasittelyt.at(-1).tapahtumapvm, vaihe: kasittelyt.at(-1).kasittelyvaihe }
+      : null
+  };
+}
+
+// Raw passthrough — table names never need baking in.
+async function fetchEduskunta(path, query) {
+  const url = `${EDK_BASE}/${path}${query ? '?' + query : ''}`;
+  const r = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': UA } });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`Eduskunta ${path}: ${r.status} ${text.slice(0, 300)}`);
+  let j; try { j = JSON.parse(text); } catch { j = { raw: text }; }
+  return { upstream: url, source: 'Eduskunnan avoin data',
+           fetched: new Date().toISOString(), data: j };
+}
+
+// ─────────────────────────────────────────────────────────────
+// 3. FINLEX   opendata.finlex.fi/finlex/avoindata/v1
+//    Akoma Ntoso XML. TLS 1.2+. No registration. 429 on rate limit.
+//    ?fx=akn/fi/act/statute/2024/123/fin@
+// ─────────────────────────────────────────────────────────────
+
+async function fetchFinlex(path, query, accept) {
+  const url = `${FINLEX_BASE}/${path}${query ? '?' + query : ''}`;
+  const r = await fetch(url, {
+    headers: { Accept: accept || 'application/xml', 'User-Agent': UA }
+  });
+  const text = await r.text();
+  if (r.status === 429) throw new Error('Finlex 429 — rate limited, back off');
+  if (!r.ok) throw new Error(`Finlex ${path}: ${r.status} ${text.slice(0, 300)}`);
+  const ct = r.headers.get('content-type') || '';
+  if (ct.includes('json')) {
+    return { upstream: url, source: 'Finlex avoin data',
+             data_class: 'authoritative', fetched: new Date().toISOString(),
+             data: JSON.parse(text) };
+  }
+  return new Response(text, {
+    headers: { ...CORS, 'Content-Type': 'application/xml; charset=utf-8',
+               'X-Upstream': url, 'X-Source': 'Finlex avoin data' }
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+
+const INDEX = {
+  service: 'aci-policy-proxy',
+  note: 'Hankeikkuna + Eduskunta = reported process data. Finlex + Eduskunta dates = authoritative.',
+  hankeikkuna: {
+    shortcuts: Object.keys(HI_SHORTCUT),
+    get:  '?hi=asettajat  |  ?hi=kohteet/uuid/<uuid>',
+    post: 'POST ?hi=kohteet/haku   body: {"tyyppi":["LAINSAADANTO"],"tila":["KAYNNISSA"]}',
+    since: '?hi_since=2026-08-01T00:00:00&tyyppi=LAINSAADANTO  — incremental',
+    warning: 'hallitusohjelmat/* are the Sipilä-era model; verify at https://api.hankeikkuna.fi/api'
+  },
+  eduskunta: {
+    asia: '?asia=VNS 8/2025   — käsittelyaikajana + mietinnöt + lausunnot',
+    raw:  '?edk=tables/<Table>/rows&perPage=100&page=0'
+  },
+  finlex: {
+    raw: '?fx=akn/fi/act/statute/2024/123/fin@   — Akoma Ntoso XML',
+    note: 'returns XML unchanged; 429 means back off'
+  }
+};
+
+export default {
+  async fetch(req) {
+    if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
+    const u = new URL(req.url);
+    const p = u.searchParams;
+    const series = p.get('series');
+
+    const pass = (drop) => new URLSearchParams(
+      [...p].filter(([k]) => !drop.includes(k))
+    ).toString();
+
+    try {
+      // Hankeikkuna
+      const hi = p.get('hi');
+      if (hi) {
+        let body = null;
+        if (req.method === 'POST') { try { body = await req.json(); } catch { body = {}; } }
+        return Response.json(
+          await fetchHankeikkuna(hi, {
+            method: body ? 'POST' : 'GET', body,
+            query: pass(['hi', 'series'])
+          }), { headers: CORS });
+      }
+      const since = p.get('hi_since');
+      if (since) {
+        return Response.json(await hankeikkunaSince(since, p.get('tyyppi')), { headers: CORS });
+      }
+      if (series && HI_SHORTCUT[series]) {
+        const s = HI_SHORTCUT[series];
+        return Response.json({ series,
+          ...await fetchHankeikkuna(s.path, { method: s.method, body: s.body || null })
+        }, { headers: CORS });
+      }
+
+      // Eduskunta
+      const asia = p.get('asia');
+      if (asia) return Response.json(await fetchAsia(asia), { headers: CORS });
+
+      const edk = p.get('edk');
+      if (edk) return Response.json(
+        await fetchEduskunta(edk, pass(['edk', 'series'])), { headers: CORS });
+
+      // Finlex
+      const fx = p.get('fx');
+      if (fx) {
+        const out = await fetchFinlex(fx, pass(['fx', 'series', 'accept']), p.get('accept'));
+        return out instanceof Response ? out : Response.json(out, { headers: CORS });
+      }
+
+      return Response.json(INDEX, { status: 400, headers: CORS });
+
+    } catch (e) {
+      return Response.json({ error: e.message }, { status: 502, headers: CORS });
+    }
+  }
+};
