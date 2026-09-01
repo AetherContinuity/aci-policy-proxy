@@ -44,6 +44,13 @@ LAIN_VAHVISTAMINEN | KESKEYTETTY | VALMISTUNUT ·
 `etappiAlkamisPaivaAlku/Loppu` as `YYYY-MM-DDTHH:MM:SS` — **no Z**.
 
 Paging is **cursor-based**: `size` (1..10000) plus `searchAfter`. Not pages.
+`HI-LAIT` and `HI-KAYNNISSA` used to hard-cap at `size:500` with no way to
+see past it — they now page automatically up to the API's 10000 max per
+page, looping further with `sort`-based `searchAfter` if a category ever
+exceeds that. **The multi-page branch is unverified** — nothing tested
+against this API has needed a second page yet, so if `?series=HI-KAYNNISSA`
+ever looks truncated again, check whether the cursor field is really `sort`
+before trusting the result.
 
 ## kohteet/haku response shape (LAINSAADANTO)
 

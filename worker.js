@@ -85,10 +85,10 @@ const HI_SHORTCUT = {
   'HI-TEEMAT':     { method: 'GET',  path: 'teemat' },
   'HI-VAIHEET':    { method: 'GET',  path: 'tyypit/kohteenValmisteluvaiheet' },
   'HI-ISTUNTOKAUDET': { method: 'GET', path: 'istuntokaudet' },
-  'HI-LAIT':       { method: 'POST', path: 'kohteet/haku',
-                     body: { tyyppi: ['LAINSAADANTO'], tila: ['KAYNNISSA'], size: 500 } },
-  'HI-KAYNNISSA':  { method: 'POST', path: 'kohteet/haku',
-                     body: { tila: ['KAYNNISSA'], size: 500 } },
+  'HI-LAIT':       { method: 'POST', path: 'kohteet/haku', paged: true,
+                     body: { tyyppi: ['LAINSAADANTO'], tila: ['KAYNNISSA'] } },
+  'HI-KAYNNISSA':  { method: 'POST', path: 'kohteet/haku', paged: true,
+                     body: { tila: ['KAYNNISSA'] } },
   // In parliament right now — the join point with the Eduskunta side
   'HI-EDUSKUNNASSA': { method: 'POST', path: 'kohteet/haku',
                      body: { tyyppi: ['LAINSAADANTO'],
@@ -118,6 +118,39 @@ async function fetchHankeikkuna(path, { method = 'GET', body = null, query = '' 
     fetched: new Date().toISOString(),
     totalHits: j.totalHits, size: j.size,
     data: j
+  };
+}
+
+// Paged fetch for shortcuts too big to fit one size-capped call (HI-LAIT,
+// HI-KAYNNISSA — previously hard-capped at size:500 with no way to see past
+// it). Page size defaults to the API's documented max (10000); most
+// currently-KAYNNISSA categories fit in a single page, so the multi-page
+// branch below usually never runs. If a category ever exceeds one page,
+// pagination continues using the `sort` array attached to each hit — the
+// OpenSearch/Elasticsearch convention behind the "searchAfter" terminology
+// the spec uses. UNVERIFIED: nothing tested against this API so far has
+// exceeded one page, so the second-page path has not been exercised live.
+async function fetchHankeikkunaPaged(path, body, { pageSize = 10000, maxPages = 10 } = {}) {
+  const results = [];
+  let searchAfter, totalHits, upstream;
+  for (let page = 0; page < maxPages; page++) {
+    const reqBody = { ...body, size: pageSize, ...(searchAfter ? { searchAfter } : {}) };
+    const r = await fetchHankeikkuna(path, { method: 'POST', body: reqBody });
+    upstream = r.upstream;
+    totalHits = r.totalHits ?? totalHits;
+    const hits = r.data?.result || [];
+    results.push(...hits);
+    if (hits.length < pageSize) break;          // last page
+    searchAfter = hits.at(-1)?.sort;
+    if (!searchAfter) break;                     // no cursor to continue with
+  }
+  return {
+    upstream, method: 'POST',
+    source: 'Valtioneuvoston Hankeikkuna (CC BY 4.0)',
+    data_class: 'self-reported process data',
+    fetched: new Date().toISOString(),
+    totalHits, size: results.length,
+    data: { result: results }
   };
 }
 
@@ -268,9 +301,10 @@ export default {
       }
       if (series && HI_SHORTCUT[series]) {
         const s = HI_SHORTCUT[series];
-        return Response.json({ series,
-          ...await fetchHankeikkuna(s.path, { method: s.method, body: s.body || null })
-        }, { headers: CORS });
+        const result = s.paged
+          ? await fetchHankeikkunaPaged(s.path, s.body || {})
+          : await fetchHankeikkuna(s.path, { method: s.method, body: s.body || null });
+        return Response.json({ series, ...result }, { headers: CORS });
       }
 
       // Eduskunta
