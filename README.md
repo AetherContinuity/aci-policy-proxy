@@ -26,7 +26,6 @@ which are events and law respectively.
     GET  ?hi_since=2026-08-01T00:00:00&tyyppi=LAINSAADANTO
     GET  ?series=HI-LAIT           live legislative projects
     GET  ?asia=VNS 8/2025          processing timeline + reports + opinions
-    GET  ?edk=tables/<Table>/rows&perPage=100&page=0
     GET  ?fx=akn/fi/act/statute/2024/123/fin@     Akoma Ntoso XML
 
 No args returns the route index.
@@ -45,6 +44,13 @@ LAIN_VAHVISTAMINEN | KESKEYTETTY | VALMISTUNUT ·
 `etappiAlkamisPaivaAlku/Loppu` as `YYYY-MM-DDTHH:MM:SS` — **no Z**.
 
 Paging is **cursor-based**: `size` (1..10000) plus `searchAfter`. Not pages.
+`HI-LAIT` and `HI-KAYNNISSA` used to hard-cap at `size:500` with no way to
+see past it — they now page automatically up to the API's 10000 max per
+page, looping further with `sort`-based `searchAfter` if a category ever
+exceeds that. **The multi-page branch is unverified** — nothing tested
+against this API has needed a second page yet, so if `?series=HI-KAYNNISSA`
+ever looks truncated again, check whether the cursor field is really `sort`
+before trusting the result.
 
 ## kohteet/haku response shape (LAINSAADANTO)
 
@@ -85,11 +91,18 @@ EDUSKUNTAKASITTELY-stage LAINSAADANTO hits in one test run.
    and for the plain-language nimeke text — `teksti` does not do free-text
    matching the way the name implies. `eduskuntatunnus` lookups work fine
    once the HE-number is already known (`HE 100/2026`, `VNS 8/2025` both
-   returned full aikajana). Two untried paths, neither ruled in or out:
-   `?edk=tables/VaskiData/rows` may carry the VN-number in document
-   metadata, or the `valtiopaivaasia` category may accept some other
-   `search` property than `teksti` — worth asking the API directly rather
-   than guessing further.
+   returned full aikajana). Two untried paths, neither ruled in or out: a
+   VaskiData-style document table might carry the VN-number in its metadata
+   (see trap 6 below on where that table actually lives), or the
+   `valtiopaivaasia` category may accept some other `search` property than
+   `teksti` — worth asking the API directly rather than guessing further.
+6. **`api.eduskunta.fi/api/v1` has no table API.** `?edk=` used to proxy
+   `/tables/{Table}/rows`, but every table path 404s, and the host root
+   returns an S3 `AccessDenied` — there's no table endpoint at this base at
+   all. Removed rather than left advertising a broken route.
+   `avoindata.eduskunta.fi` is the likely real host for that data; not
+   confirmed, not wired up. `/search` (used by `?asia=`) is the only
+   Eduskunta route confirmed working here.
 
 ## Etappi cross-check: jumissa vs. kirjanpitovelka
 

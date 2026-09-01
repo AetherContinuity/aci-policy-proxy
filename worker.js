@@ -85,10 +85,10 @@ const HI_SHORTCUT = {
   'HI-TEEMAT':     { method: 'GET',  path: 'teemat' },
   'HI-VAIHEET':    { method: 'GET',  path: 'tyypit/kohteenValmisteluvaiheet' },
   'HI-ISTUNTOKAUDET': { method: 'GET', path: 'istuntokaudet' },
-  'HI-LAIT':       { method: 'POST', path: 'kohteet/haku',
-                     body: { tyyppi: ['LAINSAADANTO'], tila: ['KAYNNISSA'], size: 500 } },
-  'HI-KAYNNISSA':  { method: 'POST', path: 'kohteet/haku',
-                     body: { tila: ['KAYNNISSA'], size: 500 } },
+  'HI-LAIT':       { method: 'POST', path: 'kohteet/haku', paged: true,
+                     body: { tyyppi: ['LAINSAADANTO'], tila: ['KAYNNISSA'] } },
+  'HI-KAYNNISSA':  { method: 'POST', path: 'kohteet/haku', paged: true,
+                     body: { tila: ['KAYNNISSA'] } },
   // In parliament right now — the join point with the Eduskunta side
   'HI-EDUSKUNNASSA': { method: 'POST', path: 'kohteet/haku',
                      body: { tyyppi: ['LAINSAADANTO'],
@@ -121,6 +121,39 @@ async function fetchHankeikkuna(path, { method = 'GET', body = null, query = '' 
   };
 }
 
+// Paged fetch for shortcuts too big to fit one size-capped call (HI-LAIT,
+// HI-KAYNNISSA — previously hard-capped at size:500 with no way to see past
+// it). Page size defaults to the API's documented max (10000); most
+// currently-KAYNNISSA categories fit in a single page, so the multi-page
+// branch below usually never runs. If a category ever exceeds one page,
+// pagination continues using the `sort` array attached to each hit — the
+// OpenSearch/Elasticsearch convention behind the "searchAfter" terminology
+// the spec uses. UNVERIFIED: nothing tested against this API so far has
+// exceeded one page, so the second-page path has not been exercised live.
+async function fetchHankeikkunaPaged(path, body, { pageSize = 10000, maxPages = 10 } = {}) {
+  const results = [];
+  let searchAfter, totalHits, upstream;
+  for (let page = 0; page < maxPages; page++) {
+    const reqBody = { ...body, size: pageSize, ...(searchAfter ? { searchAfter } : {}) };
+    const r = await fetchHankeikkuna(path, { method: 'POST', body: reqBody });
+    upstream = r.upstream;
+    totalHits = r.totalHits ?? totalHits;
+    const hits = r.data?.result || [];
+    results.push(...hits);
+    if (hits.length < pageSize) break;          // last page
+    searchAfter = hits.at(-1)?.sort;
+    if (!searchAfter) break;                     // no cursor to continue with
+  }
+  return {
+    upstream, method: 'POST',
+    source: 'Valtioneuvoston Hankeikkuna (CC BY 4.0)',
+    data_class: 'self-reported process data',
+    fetched: new Date().toISOString(),
+    totalHits, size: results.length,
+    data: { result: results }
+  };
+}
+
 // Incremental fetch: only what changed since `since` (ISO, no Z).
 async function hankeikkunaSince(since, tyyppi) {
   const body = { muokattuPaivaAlku: since };
@@ -130,7 +163,11 @@ async function hankeikkunaSince(since, tyyppi) {
 
 // ─────────────────────────────────────────────────────────────
 // 2. EDUSKUNTA   api.eduskunta.fi/api/v1
-//    /search?q=<json>   ·  /tables/{Table}/rows?...
+//    /search?q=<json>   — the only confirmed-working route on this host.
+//    /tables/{Table}/rows does NOT exist here: 404s, and the host root
+//    returns an S3 AccessDenied, i.e. no table API at this base at all.
+//    (Was wrongly documented as working — removed rather than left broken.
+//    avoindata.eduskunta.fi is the likely real host; unconfirmed.)
 // ─────────────────────────────────────────────────────────────
 
 async function edkSearch(q) {
@@ -186,17 +223,6 @@ async function fetchAsia(tunnus) {
   };
 }
 
-// Raw passthrough — table names never need baking in.
-async function fetchEduskunta(path, query) {
-  const url = `${EDK_BASE}/${path}${query ? '?' + query : ''}`;
-  const r = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': UA } });
-  const text = await r.text();
-  if (!r.ok) throw new Error(`Eduskunta ${path}: ${r.status} ${text.slice(0, 300)}`);
-  let j; try { j = JSON.parse(text); } catch { j = { raw: text }; }
-  return { upstream: url, source: 'Eduskunnan avoin data',
-           fetched: new Date().toISOString(), data: j };
-}
-
 // ─────────────────────────────────────────────────────────────
 // 3. FINLEX   opendata.finlex.fi/finlex/avoindata/v1
 //    Akoma Ntoso XML. TLS 1.2+. No registration. 429 on rate limit.
@@ -238,8 +264,7 @@ const INDEX = {
     paging: 'cursor-based: size (1..10000) + searchAfter, not page numbers'
   },
   eduskunta: {
-    asia: '?asia=VNS 8/2025   — käsittelyaikajana + mietinnöt + lausunnot',
-    raw:  '?edk=tables/<Table>/rows&perPage=100&page=0'
+    asia: '?asia=VNS 8/2025   — käsittelyaikajana + mietinnöt + lausunnot'
   },
   finlex: {
     raw: '?fx=akn/fi/act/statute/2024/123/fin@   — Akoma Ntoso XML',
@@ -276,18 +301,15 @@ export default {
       }
       if (series && HI_SHORTCUT[series]) {
         const s = HI_SHORTCUT[series];
-        return Response.json({ series,
-          ...await fetchHankeikkuna(s.path, { method: s.method, body: s.body || null })
-        }, { headers: CORS });
+        const result = s.paged
+          ? await fetchHankeikkunaPaged(s.path, s.body || {})
+          : await fetchHankeikkuna(s.path, { method: s.method, body: s.body || null });
+        return Response.json({ series, ...result }, { headers: CORS });
       }
 
       // Eduskunta
       const asia = p.get('asia');
       if (asia) return Response.json(await fetchAsia(asia), { headers: CORS });
-
-      const edk = p.get('edk');
-      if (edk) return Response.json(
-        await fetchEduskunta(edk, pass(['edk', 'series'])), { headers: CORS });
 
       // Finlex
       const fx = p.get('fx');
