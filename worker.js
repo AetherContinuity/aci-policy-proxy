@@ -63,9 +63,20 @@ const FINLEX_BASE = 'https://opendata.finlex.fi/finlex/avoindata/v1';
 // tunnus/nimi/valmisteluvaihe live under `kohde`, not at the root.
 // `lainsaadanto.heTiedot` has tehtavaluokka, saadostyypit, sivumaara,
 // kiireellisyys, perustuslakivaliokunnanLausuntoVaaditaan.
-// No HE-tunnus on the kohde — `kohde.asianumerot` (structured VN-diaarinumero,
-// e.g. VN/30707/2025) is the candidate join key to the Eduskunta side, not
-// yet confirmed against ?edk=.
+// No HE-tunnus on the kohde. `kohde.asianumerot` (structured VN-diaarinumero,
+// e.g. VN/30707/2025) is a solid anchor WITHIN Hankeikkuna but does not carry
+// over to Eduskunta: EDK search (?asia=, property `teksti`) returns 0 hits for
+// both the VN-number and the plain nimeke text. eduskuntatunnus lookups work
+// once the HE-number is already known. Untried: VaskiData rows, or another
+// search property on the valtiopaivaasia category.
+//
+// ETAPIT CROSS-CHECK: an overdue etappi (saavutettu:false, past etappiLoppu)
+// only means the kohde is stalled if its valmisteluvaihe EQUALS the kohde's
+// current valmisteluvaihe (compare ordinal position from
+// tyypit/kohteenValmisteluvaiheet). If the kohde's valmisteluvaihe is ahead
+// of the overdue etappi's stage, it's stale bookkeeping, not a stuck project.
+// Measured on 33 EDUSKUNTAKASITTELY LAINSAADANTO hits: 2 jumissa, 10
+// kirjanpitovelkaa, 21 clean — without the ordinal check all 12 look alike.
 // ─────────────────────────────────────────────────────────────
 
 const HI_SHORTCUT = {
