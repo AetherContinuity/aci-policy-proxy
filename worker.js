@@ -177,6 +177,22 @@ async function edkSearch(q) {
   return { url, json: await r.json() };
 }
 
+// Raw passthrough to edkSearch() for the caller's own query object — exists
+// to test candidate `property` names for joining Hankeikkuna's
+// kohde.asianumerot (VN-diaarinumero) to Eduskunta without a new deploy per
+// guess. `teksti` is confirmed NOT to be free-text match (0 hits on both
+// the VN-number and plain nimeke text); `eduskuntatunnus` is confirmed
+// working. Everything else — diaarinumero, vnDiaarinumero, hankenumero,
+// asianumero, ... — is untested. Same category/expression shape fetchAsia()
+// uses internally.
+async function edkSearchRaw(qJson) {
+  let q;
+  try { q = JSON.parse(qJson); } catch { throw new Error('edk_search: invalid JSON'); }
+  const { url, json } = await edkSearch(q);
+  return { upstream: url, source: 'Eduskunnan avoin data',
+           fetched: new Date().toISOString(), data: json };
+}
+
 // Generalised from the old hardcoded VNS 8/2025 handler.
 // tunnus e.g. "VNS 8/2025", "HE 12/2026", "LA 3/2025"
 async function fetchAsia(tunnus) {
@@ -264,7 +280,8 @@ const INDEX = {
     paging: 'cursor-based: size (1..10000) + searchAfter, not page numbers'
   },
   eduskunta: {
-    asia: '?asia=VNS 8/2025   — käsittelyaikajana + mietinnöt + lausunnot'
+    asia: '?asia=VNS 8/2025   — käsittelyaikajana + mietinnöt + lausunnot',
+    search: '?edk_search=<json>   — raw search query, e.g. {"category":"valtiopaivaasia","maxResults":5,"startFromIndex":0,"expression":{"and":[{"property":"eduskuntatunnus","match":"HE 100/2026"}]}}   — for testing candidate join properties against Hankeikkuna\'s asianumerot; teksti confirmed not free-text'
   },
   finlex: {
     raw: '?fx=akn/fi/act/statute/2024/123/fin@   — Akoma Ntoso XML',
@@ -310,6 +327,9 @@ export default {
       // Eduskunta
       const asia = p.get('asia');
       if (asia) return Response.json(await fetchAsia(asia), { headers: CORS });
+
+      const edkSearchQ = p.get('edk_search');
+      if (edkSearchQ) return Response.json(await edkSearchRaw(edkSearchQ), { headers: CORS });
 
       // Finlex
       const fx = p.get('fx');

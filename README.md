@@ -26,6 +26,7 @@ which are events and law respectively.
     GET  ?hi_since=2026-08-01T00:00:00&tyyppi=LAINSAADANTO
     GET  ?series=HI-LAIT           live legislative projects
     GET  ?asia=VNS 8/2025          processing timeline + reports + opinions
+    GET  ?edk_search=<json>        raw Eduskunta search query — see below
     GET  ?fx=akn/fi/act/statute/2024/123/fin@     Akoma Ntoso XML
 
 No args returns the route index.
@@ -96,6 +97,8 @@ EDUSKUNTAKASITTELY-stage LAINSAADANTO hits in one test run.
    (see trap 6 below on where that table actually lives), or the
    `valtiopaivaasia` category may accept some other `search` property than
    `teksti` — worth asking the API directly rather than guessing further.
+   `?edk_search=<json>` exists to test that second path live, one query at a
+   time, without a new deploy per candidate property name (see below).
 6. **`api.eduskunta.fi/api/v1` has no table API.** `?edk=` used to proxy
    `/tables/{Table}/rows`, but every table path 404s, and the host root
    returns an S3 `AccessDenied` — there's no table endpoint at this base at
@@ -103,6 +106,24 @@ EDUSKUNTAKASITTELY-stage LAINSAADANTO hits in one test run.
    `avoindata.eduskunta.fi` is the likely real host for that data; not
    confirmed, not wired up. `/search` (used by `?asia=`) is the only
    Eduskunta route confirmed working here.
+
+## Testing the Eduskunta join (`edk_search`)
+
+`?edk_search=<json>` forwards the query object straight to Eduskunta's
+`/search` endpoint — the same shape `fetchAsia()` uses internally, but with
+the `category`/`property`/`match` left to the caller. It exists to close
+trap 5: find whatever `search` property (if any) accepts Hankeikkuna's
+`kohde.asianumerot` VN-diaarinumero.
+
+    GET ?edk_search={"category":"valtiopaivaasia","maxResults":5,"startFromIndex":0,"expression":{"and":[{"property":"diaarinumero","match":"VN/30707/2025"}]}}
+
+Confirmed so far: `property: "eduskuntatunnus"` works (exact match on
+`HE 100/2026` etc.); `property: "teksti"` does not do free-text matching —
+0 hits on both a VN-number and a plain nimeke string. Everything else
+(`diaarinumero`, `vnDiaarinumero`, `hankenumero`, `asianumero`, ...) is
+untested guesswork at candidate property names, not a confirmed API
+contract — if none of them hit, the join may simply not exist via
+`/search` and the VaskiData path (trap 5) is the remaining option.
 
 ## Etappi cross-check: jumissa vs. kirjanpitovelka
 
