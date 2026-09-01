@@ -46,6 +46,19 @@ LAIN_VAHVISTAMINEN | KESKEYTETTY | VALMISTUNUT ·
 
 Paging is **cursor-based**: `size` (1..10000) plus `searchAfter`. Not pages.
 
+## kohteet/haku response shape (LAINSAADANTO)
+
+Each hit is `{ kohde, lainsaadanto, etapit, asiakirjat, asiasanat, linkit, ... }`.
+`tunnus`, `nimi`, and `valmisteluvaihe` live inside `kohde`, not at the top
+level — parse for `kohde.valmisteluvaihe`, not `.valmisteluvaihe`.
+
+`lainsaadanto.heTiedot` carries tehtäväluokka, säädöstyypit, arvioitu
+sivumäärä, kiireellisyys, and `perustuslakivaliokunnanLausuntoVaaditaan`.
+`säädöstyyppi` includes `MUU_EU_POLITIIKKAAN_LIITTYVA` — EU origin is
+machine-readable per statute. `linkit` carries EUR-Lex URLs where relevant.
+`asiakirjat` (lausunnot etc.) can be large — 1,667 entries across 33
+EDUSKUNTAKASITTELY-stage LAINSAADANTO hits in one test run.
+
 ## Known traps
 
 1. **Base is `/api/v2`.** The official testausohje PDF documents `/api/v1`,
@@ -58,5 +71,16 @@ Paging is **cursor-based**: `size` (1..10000) plus `searchAfter`. Not pages.
 3. `valmisteluvaihe` is the useful field for pipeline work: it exposes the
    whole chain esivalmistelu → lausuntomenettely → eduskuntakäsittely →
    lain vahvistaminen as a machine-readable enum.
+4. **Response fields are nested, not flat.** See "kohteet/haku response
+   shape" above — a parser expecting `.tunnus` or `.valmisteluvaihe` at the
+   root gets `undefined` silently. Same trap shape as PxWeb's `category.index`.
+5. **No HE-tunnus on the kohde.** None of the LAINSAADANTO hits carry an
+   Eduskunta HE-number, so `?asia=HE x/2026` can't be joined directly off
+   `kohteet/haku` results. `kohde.asianumerot` is the better anchor instead
+   of the nimeke text: it's a structured VN-diaarinumero (e.g.
+   `VN/30707/2025`), present on every hit tested, and stable for the life of
+   the case — but it has not yet been confirmed to match anything on the
+   Eduskunta side. That match is the open question for joining this proxy's
+   two halves; it needs testing against `?edk=`, not more Hankeikkuna reading.
 
 Fetched values are re-queryable and do not belong in memory; this interface does.

@@ -57,6 +57,15 @@ const FINLEX_BASE = 'https://opendata.finlex.fi/finlex/avoindata/v1';
 //
 // PAGINATION IS CURSOR-BASED: `size` (1..10000) + `searchAfter`, not pages.
 // Responses use { result: [...] } with a top-level `size`.
+//
+// RESPONSE SHAPE IS NESTED (LAINSAADANTO hits): each result is
+//   { kohde, lainsaadanto, etapit, asiakirjat, asiasanat, linkit, ... }
+// tunnus/nimi/valmisteluvaihe live under `kohde`, not at the root.
+// `lainsaadanto.heTiedot` has tehtavaluokka, saadostyypit, sivumaara,
+// kiireellisyys, perustuslakivaliokunnanLausuntoVaaditaan.
+// No HE-tunnus on the kohde — `kohde.asianumerot` (structured VN-diaarinumero,
+// e.g. VN/30707/2025) is the candidate join key to the Eduskunta side, not
+// yet confirmed against ?edk=.
 // ─────────────────────────────────────────────────────────────
 
 const HI_SHORTCUT = {
