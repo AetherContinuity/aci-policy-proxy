@@ -81,24 +81,21 @@ EDUSKUNTAKASITTELY-stage LAINSAADANTO hits in one test run.
 4. **Response fields are nested, not flat.** See "kohteet/haku response
    shape" above — a parser expecting `.tunnus` or `.valmisteluvaihe` at the
    root gets `undefined` silently. Same trap shape as PxWeb's `category.index`.
-5. **No HE-tunnus on the kohde, and the join to Eduskunta is still open.**
-   None of the LAINSAADANTO hits carry an Eduskunta HE-number, so
-   `?asia=HE x/2026` can't be built directly off `kohteet/haku` results.
+5. **No HE-tunnus on the kohde while EDUSKUNTAKASITTELY, and the join to
+   Eduskunta is still open.** None of the 33 EDUSKUNTAKASITTELY-stage
+   LAINSAADANTO hits carry an Eduskunta HE-number, so `?asia=HE x/2026`
+   can't be built directly off `kohteet/haku` results at that stage.
    `kohde.asianumerot` is a structured VN-diaarinumero (e.g.
    `VN/30707/2025`), present on every hit tested, stable for the case's
-   lifecycle, and a solid anchor **within** Hankeikkuna — but it does not
-   carry over to Eduskunta. Confirmed dead end: `?asia=` (Eduskunnan
-   `search`, property `teksti`) returns **0 hits** both for the VN-number
-   and for the plain-language nimeke text — `teksti` does not do free-text
-   matching the way the name implies. `eduskuntatunnus` lookups work fine
-   once the HE-number is already known (`HE 100/2026`, `VNS 8/2025` both
-   returned full aikajana). Two untried paths, neither ruled in or out: a
-   VaskiData-style document table might carry the VN-number in its metadata
-   (see trap 6 below on where that table actually lives), or the
-   `valtiopaivaasia` category may accept some other `search` property than
-   `teksti` — worth asking the API directly rather than guessing further.
-   `?edk_search=<json>` exists to test that second path live, one query at a
-   time, without a new deploy per candidate property name (see below).
+   lifecycle, and a solid anchor **within** Hankeikkuna — but confirmed not
+   to carry over to Eduskunta's `search` API under any tried property (see
+   trap 7). Two paths left, neither tried yet: check whether
+   `lainsaadanto.heTiedot` on **later**-stage kohteet (LAIN_VAHVISTAMINEN,
+   VALMISTUNUT — the HE has been annettu by then) carries an HE-number,
+   which is cheap to check and immediately says whether the field is ever
+   populated at all; or a VaskiData-style document table might carry the
+   VN-number in its metadata (see trap 6 on where that table actually
+   lives, still unconfirmed).
 6. **`api.eduskunta.fi/api/v1` has no table API.** `?edk=` used to proxy
    `/tables/{Table}/rows`, but every table path 404s, and the host root
    returns an S3 `AccessDenied` — there's no table endpoint at this base at
@@ -106,6 +103,22 @@ EDUSKUNTAKASITTELY-stage LAINSAADANTO hits in one test run.
    `avoindata.eduskunta.fi` is the likely real host for that data; not
    confirmed, not wired up. `/search` (used by `?asia=`) is the only
    Eduskunta route confirmed working here.
+7. **`/search` is scored, not filtered — `?asia=` used to trust it blindly.**
+   A *valid* property always returns results, ranked by relevance to the
+   whole corpus, even when the match value doesn't exist: a fake tunnus
+   `HE 999/2099` scored **21,156** hits; a different fake, `ZZ 999/1900`,
+   scored 67, top hit `RA 1900/1990` — unrelated to what was asked for.
+   `maxResults:1` alone silently returns that top-scored guess as if it
+   were the answer — same failure shape as `aci-fingrid-proxy`'s
+   `startTime` returning live data instead of the requested window.
+   `fetchAsia()` now checks the returned `eduskuntatunnus.fi` starts with
+   the requested tunnus before returning it, throwing "not found"
+   otherwise. An **unknown** property name is the one thing that reliably
+   returns 0 hits — that's what makes trap 5's `edk_search` testing valid:
+   0 hits there means "property doesn't exist", not "no match for this
+   value". Any future use of `/search` (this route, `edk_search`, or code
+   added later) needs to validate the specific field it asked about,
+   never trust `results[0]`.
 
 ## Testing the Eduskunta join (`edk_search`)
 
@@ -113,17 +126,19 @@ EDUSKUNTAKASITTELY-stage LAINSAADANTO hits in one test run.
 `/search` endpoint — the same shape `fetchAsia()` uses internally, but with
 the `category`/`property`/`match` left to the caller. It exists to close
 trap 5: find whatever `search` property (if any) accepts Hankeikkuna's
-`kohde.asianumerot` VN-diaarinumero.
+`kohde.asianumerot` VN-diaarinumero. Read trap 7 first — `/search` is
+scored, not filtered, and 0 hits is the only signal this route can safely
+lean on (it means the property doesn't exist in the schema).
 
     GET ?edk_search={"category":"valtiopaivaasia","maxResults":5,"startFromIndex":0,"expression":{"and":[{"property":"diaarinumero","match":"VN/30707/2025"}]}}
 
-Confirmed so far: `property: "eduskuntatunnus"` works (exact match on
-`HE 100/2026` etc.); `property: "teksti"` does not do free-text matching —
-0 hits on both a VN-number and a plain nimeke string. Everything else
-(`diaarinumero`, `vnDiaarinumero`, `hankenumero`, `asianumero`, ...) is
-untested guesswork at candidate property names, not a confirmed API
-contract — if none of them hit, the join may simply not exist via
-`/search` and the VaskiData path (trap 5) is the remaining option.
+Confirmed: `eduskuntatunnus` exists (scored, not filtered — see trap 7);
+`teksti` exists but isn't free-text match. **Ruled out** (0 hits = property
+doesn't exist on `valtiopaivaasia`): `diaarinumero`, `vnDiaarinumero`,
+`hankenumero`, `asianumero`, `vnAsianumero`, `valtioneuvostonAsianumero`,
+`tunnus`. None of these seven carry the VN-diaarinumero — the join isn't
+findable this way. What's left: the `heTiedot`-on-later-stage-kohteet check
+and the VaskiData path from trap 5, neither yet tried.
 
 ## Etappi cross-check: jumissa vs. kirjanpitovelka
 

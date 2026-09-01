@@ -180,11 +180,21 @@ async function edkSearch(q) {
 // Raw passthrough to edkSearch() for the caller's own query object — exists
 // to test candidate `property` names for joining Hankeikkuna's
 // kohde.asianumerot (VN-diaarinumero) to Eduskunta without a new deploy per
-// guess. `teksti` is confirmed NOT to be free-text match (0 hits on both
-// the VN-number and plain nimeke text); `eduskuntatunnus` is confirmed
-// working. Everything else — diaarinumero, vnDiaarinumero, hankenumero,
-// asianumero, ... — is untested. Same category/expression shape fetchAsia()
-// uses internally.
+// guess. Same category/expression shape fetchAsia() uses internally.
+//
+// /search is SCORED, not filtered — a known property always returns
+// results, ranked by relevance to the whole corpus, even for a match value
+// that doesn't exist (confirmed: a fake tunnus scored 21,156 / 67 hits
+// depending on property). An UNKNOWN property name is what reliably
+// returns 0 hits — that's the actual signal this route is for, not
+// "0 hits = no match". Never trust results[0] as a real match without
+// separately verifying the field you asked about actually equals what you
+// asked for (see fetchAsia's fix for the same bug).
+//
+// Ruled out on `valtiopaivaasia` (confirmed 0 hits = property doesn't
+// exist): diaarinumero, vnDiaarinumero, hankenumero, asianumero,
+// vnAsianumero, valtioneuvostonAsianumero, tunnus. `eduskuntatunnus` is
+// confirmed to exist; `teksti` exists but isn't free-text match.
 async function edkSearchRaw(qJson) {
   let q;
   try { q = JSON.parse(qJson); } catch { throw new Error('edk_search: invalid JSON'); }
@@ -195,6 +205,14 @@ async function edkSearchRaw(qJson) {
 
 // Generalised from the old hardcoded VNS 8/2025 handler.
 // tunnus e.g. "VNS 8/2025", "HE 12/2026", "LA 3/2025"
+//
+// /search is a SCORED/FUZZY search, not a filter: a valid property always
+// returns results (a nonexistent tunnus like "HE 999/2099" scored 21,156
+// hits, not zero), ranked by relevance, with the best guess at index 0.
+// maxResults:1 alone silently returns that best guess even when it's
+// unrelated to what was asked for — the exact wrong-window-for-a-query
+// failure shape as aci-fingrid-proxy's startTime. So the top hit's own
+// eduskuntatunnus MUST be checked against the request before trusting it.
 async function fetchAsia(tunnus) {
   const { url, json } = await edkSearch({
     category: 'valtiopaivaasia',
@@ -203,7 +221,10 @@ async function fetchAsia(tunnus) {
     expression: { and: [{ property: 'eduskuntatunnus', match: tunnus }] }
   });
   const asia = json.results?.[0]?.valtiopaivaasia;
-  if (!asia) throw new Error(`Valtiopäiväasia not found: ${tunnus}`);
+  const actualTunnus = asia?.eduskuntatunnus?.fi || '';
+  if (!asia || !actualTunnus.startsWith(tunnus)) {
+    throw new Error(`Valtiopäiväasia not found: ${tunnus}`);
+  }
 
   const kasittelyt = asia.kasittelyt?.fi || [];
   const asiakirjat = asia.keskeisetAsiakirjat?.fi || [];
@@ -215,7 +236,7 @@ async function fetchAsia(tunnus) {
     source: 'Eduskunnan avoin data',
     data_class: 'events (dates are authoritative)',
     fetched: new Date().toISOString(),
-    eduskuntatunnus: tunnus,
+    eduskuntatunnus: actualTunnus,
     nimeke: asia.nimeke?.fi || '',
     tila: asia.tila?.fi || 'tuntematon',
     viimeisinKasittelyvaihe: asia.viimeisinKasittelyvaihe?.fi || 'ei tietoa',
