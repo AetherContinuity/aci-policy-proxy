@@ -16,42 +16,66 @@ const CORS = {
 
 const UA = 'curl/8.5.0';
 
-const HI_BASE     = 'https://api.hankeikkuna.fi/api/v1';
+const HI_BASE     = 'https://api.hankeikkuna.fi/api/v2';
 const EDK_BASE    = 'https://api.eduskunta.fi/api/v1';
 const FINLEX_BASE = 'https://opendata.finlex.fi/finlex/avoindata/v1';
 
 // ─────────────────────────────────────────────────────────────
-// 1. HANKEIKKUNA   api.hankeikkuna.fi/api/v1     CC BY 4.0
+// 1. HANKEIKKUNA   api.hankeikkuna.fi/api/v2     CC BY 4.0
 //
-// Verified GET paths (official testausohje):
-//   asettajat  ·  asettajat/uuid/{uuid}
-//   kohteet/uuid/{uuid}  ·  henkilot/uuid/{uuid}
-//   hallitusohjelmat/karkihankkeet | painopistealueet | toimenpiteet
-//     ^^ SIPILÄ-ERA MODEL. Current model is toimintasuunnitelma with
-//        elementit + välitavoitteet; its endpoints are NOT in the
-//        testausohje (which dates from 2017). Check Swagger at
-//        https://api.hankeikkuna.fi/api before relying on them.
-// Verified POST paths:  kohteet/haku  ·  henkilot/haku
+// Paths below are read from the live OpenAPI 3.1 spec at /api/api-docs
+// (verified 2026-09-01). NOTE: the official testausohje PDF documents
+// /api/v1 — that prefix 404s. The spec is authoritative, the PDF is not.
 //
-// kohteet/haku body (all optional; arrays unless noted):
-//   tyyppi    HANKE | LAINSAADANTO | TOIMIELIN | STRATEGIA
-//   tila      e.g. KAYNNISSA   (full enum in Swagger > KohdeSearchFormData)
-//   tunnus    e.g. "VNK:500:2014"
-//   asiasanat YSO/JUHO URIs, e.g. "http://www.yso.fi/onto/yso/p2538"
-//   teksti    free text (STRING, not array)
-//   muokattuPaivaAlku / muokattuPaivaLoppu  "YYYY-MM-DDTHH:MM:SS"  (no Z)
-// Response carries size + totalHits.
+// GET   asettajat  ·  asettajat/uuid/{uuid}
+//       kohteet/uuid/{uuid}  ·  henkilot/uuid/{uuid}
+//       hallitusohjelmat/hallitukset | karkihankkeet | painopistealueet
+//                       | toimenpiteet | rakenneElementtiTyypit
+//                       | valitavoiteTyypit          (+ /uuid/{uuid})
+//       istuntokaudet  ·  teemat
+//       tyypit/kohteenValmisteluvaiheet | heSaadosTyypit | heTaeTyypit
+// POST  kohteet/haku  ·  henkilot/haku
+//       hallitusohjelmat/rakenneElementit/haku   <- current toimintasuunnitelma model
+//
+// kohteet/haku body (KohdeV2SearchFormData), all optional:
+//   tyyppi          HANKE | LAINSAADANTO | TOIMIELIN | STRATEGIA
+//   tila            SUUNNITTEILLA | KAYNNISSA | PAATTYNYT
+//   valmisteluvaihe ESIVALMISTELU | PERUSVALMISTELU | LAUSUNTOMENETTELY
+//                   | JATKOVALMISTELU | VALTIONEUVOSTON_PAATOKSENTEKO
+//                   | EDUSKUNTAKASITTELY | LAIN_VAHVISTAMINEN
+//                   | KESKEYTETTY | VALMISTUNUT
+//   lainsaadantoTehtavaluokka  HALLITUKSEN_ESITYKSEN_VALMISTELU |
+//                   ASETUKSEN_ANTAMINEN | TALOUSARVIOT |
+//                   VALTION_LAINANOTTO_JA_ANTO | VALTIONTAKAUKSET
+//   etappiTyyppi    LAUSUNTOKIERROS | SAADOS | BUDJETTIPAATOS | ... (14 values)
+//   toimielinTyyppi / strategiaTyyppi — see spec
+//   tunnus[] e.g. "VNK:500:2014" · uuid[] · asettajaUuid[] · teemaUuid[]
+//   asiasanat[] YSO/JUHO URIs · teksti (STRING, not array)
+//   asettamisPaivaAlku/Loppu · muokattuPaivaAlku/Loppu ·
+//   etappiAlkamisPaivaAlku/Loppu     format "YYYY-MM-DDTHH:MM:SS"  (no Z)
+//   hallitusohjelmaElementtiUuid[] / hallitusohjelmaValitavoiteUuid[]
+//
+// PAGINATION IS CURSOR-BASED: `size` (1..10000) + `searchAfter`, not pages.
+// Responses use { result: [...] } with a top-level `size`.
 // ─────────────────────────────────────────────────────────────
 
 const HI_SHORTCUT = {
-  'HI-ASETTAJAT': { method: 'GET',  path: 'asettajat' },
-  'HI-KARKI':     { method: 'GET',  path: 'hallitusohjelmat/karkihankkeet' },
-  'HI-PAINOPIST': { method: 'GET',  path: 'hallitusohjelmat/painopistealueet' },
-  'HI-TOIMENPIT': { method: 'GET',  path: 'hallitusohjelmat/toimenpiteet' },
-  'HI-LAIT':      { method: 'POST', path: 'kohteet/haku',
-                    body: { tyyppi: ['LAINSAADANTO'], tila: ['KAYNNISSA'] } },
-  'HI-KAYNNISSA': { method: 'POST', path: 'kohteet/haku',
-                    body: { tila: ['KAYNNISSA'] } }
+  'HI-ASETTAJAT':  { method: 'GET',  path: 'asettajat' },
+  'HI-HALLITUKSET':{ method: 'GET',  path: 'hallitusohjelmat/hallitukset' },
+  'HI-TEEMAT':     { method: 'GET',  path: 'teemat' },
+  'HI-VAIHEET':    { method: 'GET',  path: 'tyypit/kohteenValmisteluvaiheet' },
+  'HI-ISTUNTOKAUDET': { method: 'GET', path: 'istuntokaudet' },
+  'HI-LAIT':       { method: 'POST', path: 'kohteet/haku',
+                     body: { tyyppi: ['LAINSAADANTO'], tila: ['KAYNNISSA'], size: 500 } },
+  'HI-KAYNNISSA':  { method: 'POST', path: 'kohteet/haku',
+                     body: { tila: ['KAYNNISSA'], size: 500 } },
+  // In parliament right now — the join point with the Eduskunta side
+  'HI-EDUSKUNNASSA': { method: 'POST', path: 'kohteet/haku',
+                     body: { tyyppi: ['LAINSAADANTO'],
+                             valmisteluvaihe: ['EDUSKUNTAKASITTELY'], size: 500 } },
+  'HI-LAUSUNNOLLA': { method: 'POST', path: 'kohteet/haku',
+                     body: { tyyppi: ['LAINSAADANTO'],
+                             valmisteluvaihe: ['LAUSUNTOMENETTELY'], size: 500 } }
 };
 
 async function fetchHankeikkuna(path, { method = 'GET', body = null, query = '' } = {}) {
@@ -189,7 +213,9 @@ const INDEX = {
     get:  '?hi=asettajat  |  ?hi=kohteet/uuid/<uuid>',
     post: 'POST ?hi=kohteet/haku   body: {"tyyppi":["LAINSAADANTO"],"tila":["KAYNNISSA"]}',
     since: '?hi_since=2026-08-01T00:00:00&tyyppi=LAINSAADANTO  — incremental',
-    warning: 'hallitusohjelmat/* are the Sipilä-era model; verify at https://api.hankeikkuna.fi/api'
+    spec: 'https://api.hankeikkuna.fi/api/api-docs  (OpenAPI 3.1 — authoritative)',
+    warning: 'base is /api/v2; the 2017 testausohje PDF documents /api/v1, which 404s',
+    paging: 'cursor-based: size (1..10000) + searchAfter, not page numbers'
   },
   eduskunta: {
     asia: '?asia=VNS 8/2025   — käsittelyaikajana + mietinnöt + lausunnot',
