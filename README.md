@@ -28,6 +28,8 @@ which are events and law respectively.
     GET  ?asia=VNS 8/2025          processing timeline + reports + opinions
     GET  ?edk_search=<json>        raw Eduskunta search query — see below
     GET  ?fx=akn/fi/act/statute/2024/123/fin@     Akoma Ntoso XML
+    GET  ?fx=akn/fi/act/statute/list?format=json&limit=10&startYear=2026&page=2
+    GET  ?votes=HE 51/2026                        täysistuntoäänestykset
 
 No args returns the route index.
 
@@ -161,3 +163,38 @@ this ordinal check every one of the 12 overdue cases looks like an alarm;
 with it, only 2 are.
 
 Fetched values are re-queryable and do not belong in memory; this interface does.
+
+## HTTP status and caching (2026-09-29)
+
+Errors used to come back as 502 regardless of cause, so callers had to
+search the message text for "404". Now:
+
+| Case | HTTP | Body |
+|---|---|---|
+| Finlex statute does not exist | 404 | `{error, upstream_status: 404}` |
+| `?votes=` has no record | 404 | same — **not** "no vote held": passed without a vote, still in progress and unknown tunnus all look alike |
+| Upstream rate limit | 429 | back off, do not retry |
+| Anything else | 502 | as before |
+
+Error message texts are unchanged, so older callers that read the text
+keep working.
+
+Cache (Cloudflare Cache API, 200 responses only, header `X-Cache: HIT|MISS`):
+
+| Route | TTL | Why |
+|---|---|---|
+| `?fx=akn/fi/act/statute/<y>/<n>/…` | 30 d | a published statute does not change |
+| `?fx=…/list…` | 1 h | new numbers appear daily |
+| `?votes=` | 6 h | a bill under consideration can get new votes |
+
+A missing statute is never cached — the next number appears tomorrow.
+
+## Finlex notes
+
+- `list` returns at most 10 rows per page (`limit must be less than or equal to 10`).
+  OGAS3 therefore walks statute numbers instead of paging the list.
+- `FRBRdate name="dateIssued"` = vahvistuspäivä, `datePublished` = julkaisu säädöskokoelmassa.
+- `FRBRauthor` is `organization_fi.parliament` even for ministry decrees — do not use it.
+  Statute kind is in `finlex:typeStatute` (act, decree, decision, announcement).
+- HE, committee report and EV are in `hcontainer name="preliminaryWork"`. Read HE numbers
+  only from there: an HE mention in the body text can refer to another act's preparatory work.
