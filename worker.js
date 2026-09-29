@@ -16,6 +16,16 @@ const CORS = {
 
 const UA = 'curl/8.5.0';
 
+// Ylävirran virhe HTTP-tilan kanssa. Lisätty 2026-09-29: aiemmin kaikki
+// virheet palautettiin 502:na, joten kutsujan oli etsittävä "404"
+// virheviestin tekstistä erottaakseen puuttuvan säädöksen tai
+// äänestystietueen oikeasta viasta. Tila kulkee nyt HTTP-koodina
+// (404/429) ja kentässä upstream_status. Viestin teksti ei muuttunut,
+// joten vanhat tekstiä lukevat kutsujat toimivat edelleen.
+class UpstreamError extends Error {
+  constructor(message, status) { super(message); this.status = status; }
+}
+
 const HI_BASE     = 'https://api.hankeikkuna.fi/api/v2';
 const EDK_BASE    = 'https://api.eduskunta.fi/api/v1';
 const FINLEX_BASE = 'https://opendata.finlex.fi/finlex/avoindata/v1';
@@ -272,8 +282,9 @@ async function fetchFinlex(path, query, accept) {
     headers: { Accept: accept || 'application/xml', 'User-Agent': UA }
   });
   const text = await r.text();
-  if (r.status === 429) throw new Error('Finlex 429 — rate limited, back off');
-  if (!r.ok) throw new Error(`Finlex ${path}: ${r.status} ${text.slice(0, 300)}`);
+  if (r.status === 429) throw new UpstreamError('Finlex 429 — rate limited, back off', 429);
+  if (!r.ok) throw new UpstreamError(`Finlex ${path}: ${r.status} ${text.slice(0, 300)}`,
+                                     r.status === 404 ? 404 : 502);
   const ct = r.headers.get('content-type') || '';
   if (ct.includes('json')) {
     return { upstream: url, source: 'Finlex avoin data',
@@ -306,12 +317,56 @@ const INDEX = {
   },
   finlex: {
     raw: '?fx=akn/fi/act/statute/2024/123/fin@   — Akoma Ntoso XML',
-    note: 'returns XML unchanged; 429 means back off'
+    list: '?fx=akn/fi/act/statute/list?format=json&limit=10&startYear=2026&endYear=2026&langAndVersion=fin@&page=2   — limit max 10',
+    note: 'returns XML unchanged; missing statute -> HTTP 404, rate limit -> HTTP 429 (back off). '
+        + 'dateIssued = vahvistus, datePublished = julkaisu. HE-viittaus vain preliminaryWork-osiosta. '
+        + 'FRBRauthor on eduskunta myös asetuksille — älä käytä; lue finlex:typeStatute.'
+  },
+  votes: '?votes=HE 51/2026   — täysistuntoäänestykset. HTTP 404 = ei tietuetta (hyväksytty ilman äänestystä, kesken tai tunnusta ei ole) — EI hylätty',
+  cache: 'säädös-XML 30 vrk, äänestykset 6 h, Finlex-listaukset 1 h; vain 200-vastaukset. Otsake X-Cache: HIT|MISS'
+};
+
+// ── Välimuisti (lisätty 2026-09-29) ─────────────────────────────
+// OGAS3:n kuukausikaappaus hakee noin 140 säädöstä ja 200 äänestystä.
+// Kuivaharjoitus ja varsinainen ajo samana päivänä tuplasivat kuorman
+// ylävirtaan. Julkaistu säädös ei muutu, joten sen XML säilytetään
+// 30 vrk. Äänestykset 6 h: käsittelyssä oleva esitys voi saada uusia
+// äänestyksiä. Listaukset 1 h. Vain 200-vastaukset — puuttuvaa
+// säädöstä EI tallenneta, koska seuraava numero ilmestyy huomenna.
+function cacheTtl(p) {
+  const fx = p.get('fx');
+  if (fx && /^akn\/fi\/act\/statute\/\d{4}\/\d+\//.test(fx)) return 30 * 86400;
+  if (fx && /\/list(\?|$)/.test(fx)) return 3600;
+  if (p.get('votes')) return 6 * 3600;
+  return 0;
+}
+
+export default {
+  async fetch(req, env, ctx) {
+    const ttl = req.method === 'GET' ? cacheTtl(new URL(req.url).searchParams) : 0;
+    if (!ttl) return handle(req);
+    const cache = caches.default;
+    const hit = await cache.match(req);
+    if (hit) {
+      const h = new Headers(hit.headers);
+      h.set('X-Cache', 'HIT');
+      return new Response(hit.body, { status: hit.status, headers: h });
+    }
+    const res = await handle(req);
+    if (res.status === 200) {
+      const h = new Headers(res.headers);
+      h.set('Cache-Control', `public, max-age=${ttl}`);
+      h.set('X-Cache', 'MISS');
+      const out = new Response(res.body, { status: 200, headers: h });
+      const put = cache.put(req, out.clone());
+      if (ctx && ctx.waitUntil) ctx.waitUntil(put); else await put;
+      return out;
+    }
+    return res;
   }
 };
 
-export default {
-  async fetch(req) {
+async function handle(req) {
     if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
     const u = new URL(req.url);
     const p = u.searchParams;
@@ -495,8 +550,17 @@ export default {
         // joten joko koodaus on yhä väärä tai polku on vanhentunut.
         // RATKAISEMATTA — ja tyhjä 404 nostetaan virheenä, ei
         // tulkita havainnoksi.
-        if (!r.ok) throw new Error(
-          `Äänestykset ${tunnus}: ${r.status}. Kokeillut muodot: ${tried.join(', ')}`);
+        //
+        // PÄIVITYS 2026-09-29: koodausvika korjattiin 7.9. (VNT 1/2026 vp
+        // palauttaa nyt kaksi äänestystä). Tyhjä 404 jäi silti kahden
+        // eri tilan merkiksi: (a) asiasta ei ole äänestystietuetta —
+        // hyväksytty ilman äänestystä tai käsittely kesken — ja (b)
+        // tunnusta ei ole. Proxy ei erota niitä; OGAS3 kirjaa tilan
+        // 'ei tietuetta' ja päättelee lopputuloksen muista lähteistä.
+        // 404 palautetaan nyt HTTP 404:nä, ei 502:na.
+        if (!r.ok) throw new UpstreamError(
+          `Äänestykset ${tunnus}: ${r.status}. Kokeillut muodot: ${tried.join(', ')}`,
+          r.status === 404 ? 404 : r.status === 429 ? 429 : 502);
         let data;
         try { data = JSON.parse(text); }
         catch { throw new Error(`Äänestykset ${tunnus}: vastaus ei ole JSONia`); }
@@ -640,7 +704,8 @@ export default {
       return Response.json(INDEX, { status: 400, headers: CORS });
 
     } catch (e) {
-      return Response.json({ error: e.message }, { status: 502, headers: CORS });
+      const status = e.status || 502;
+      return Response.json({ error: e.message, upstream_status: e.status || null },
+                           { status, headers: CORS });
     }
-  }
-};
+}
