@@ -594,6 +594,13 @@ async function handle(req) {
           const t = ((v.aanestysotsikko || {}).fi || '').toLowerCase();
           const vaihe = (((v.kohta || {}).kasittelyvaihenimi || {}).fi || '').toLowerCase();
 
+          // MITÄTÖITY äänestys (aanestysmitatoity: true) ei ole havainto
+          // lainkaan: tulos 0–0, kaikki "poissa". Lisätty 2026-10-01 —
+          // HE 145/2026 äänestys 4 (18.9.2026) oli merkitty kelpoiseksi.
+          if (v.aanestysmitatoity === true)
+            return { kind: 'mitatoity', usable: false, party_line: null,
+                     why: 'aanestys mitatoity — ei tulosta, ei havaintoa' };
+
           // LUOTTAMUSÄÄNESTYS: äänestyksen KOHDE ei ole sisältö vaan
           // kysymys "luotatteko hallitukseen". Sisältöä ei äänestetä,
           // joten uptakea ei voi lukea tuloksesta.
