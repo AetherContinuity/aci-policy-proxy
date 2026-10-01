@@ -236,7 +236,14 @@ async function fetchAsia(tunnus) {
     throw new Error(`Valtiopäiväasia not found: ${tunnus}`);
   }
 
-  const kasittelyt = asia.kasittelyt?.fi || [];
+  // Upstream order is NOT chronological (verified 2026-10-01: KAA 4/2024 vp
+  // listed 2025-09-09 last although 2026-05-20/29 sessions existed), so
+  // .at(-1) gave a stale "latest". Sort by date; undated rows go last and
+  // never become viimeisinKasittely.
+  const kasittelyt = [...(asia.kasittelyt?.fi || [])].sort((a, b) =>
+    (a.tapahtumapvm ? 0 : 1) - (b.tapahtumapvm ? 0 : 1) ||
+    String(a.tapahtumapvm || '').localeCompare(String(b.tapahtumapvm || '')));
+  const dated = kasittelyt.filter(k => k.tapahtumapvm);
   const asiakirjat = asia.keskeisetAsiakirjat?.fi || [];
   const mietinnot  = asiakirjat.filter(a => /VM$/.test(a.asiakirjatyyppikoodi || ''));
   const lausunnot  = asiakirjat.filter(a => /VL$/.test(a.asiakirjatyyppikoodi || ''));
@@ -264,8 +271,8 @@ async function fetchAsia(tunnus) {
     aikajana: kasittelyt.map(k => ({
       pvm: k.tapahtumapvm, vaihe: k.kasittelyvaihe
     })),
-    viimeisinKasittely: kasittelyt.length
-      ? { pvm: kasittelyt.at(-1).tapahtumapvm, vaihe: kasittelyt.at(-1).kasittelyvaihe }
+    viimeisinKasittely: dated.length
+      ? { pvm: dated.at(-1).tapahtumapvm, vaihe: dated.at(-1).kasittelyvaihe }
       : null
   };
 }
