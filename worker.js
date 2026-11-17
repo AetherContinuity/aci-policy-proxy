@@ -316,6 +316,10 @@ async function fetchFinlex(path, query, accept) {
 // ─────────────────────────────────────────────────────────────
 
 const INDEX = {
+  us: {
+    dod: '?dod=FY2027/FY2027_c1.pdf   — DoD Comptroller budjettiasiakirja (PDF/XLSX), polkurajattu',
+    usa: '?usa=search/spending_by_category/country/ (POST JSON) tai ?usa=references/… (GET) — USAspending v2',
+  },
   service: 'aci-policy-proxy',
   note: 'Hankeikkuna + Eduskunta = reported process data. Finlex + Eduskunta dates = authoritative.',
   hankeikkuna: {
@@ -355,6 +359,8 @@ function cacheTtl(p) {
   if (fx && /^akn\/fi\/act\/statute\/\d{4}\/\d+\//.test(fx)) return 30 * 86400;
   if (fx && /\/list(\?|$)/.test(fx)) return 3600;
   if (p.get('votes')) return 6 * 3600;
+  if (p.get('dod')) return 30 * 86400;
+  if (p.get('usa') && /^references\//.test(p.get('usa'))) return 86400;
   return 0;
 }
 
@@ -405,6 +411,42 @@ async function handle(req) {
       //
       // TURVARAJAUS: vain api.hankeikkuna.fi. Avoin URL-passthrough tekisi
       // tästä yleisen välityspalvelimen, mikä ei ole tarkoitus.
+      // ── Yhdysvaltain julkiset budjetti- ja menolähteet (lisätty 2026-11-17) ──
+      // Ennakkokirjaus I (SEURANTA.md): DCA:n epäsymmetria. Vain kaksi kohdetta,
+      // molemmat polkurajattuja; ei avointa passthroughia.
+      //   ?dod=FY2027/FY2027_c1.pdf   comptroller.war.gov/Portals/45/Documents/defbudget/<polku>
+      //   ?usa=search/spending_by_category/country/   (POST, JSON-runko välitetään)
+      //   ?usa=references/toptier_agencies/          (GET)
+      // Kokoamisrajaus (I, kohta 5) tehdään analyysissä: proxy ei tallenna mitään.
+      const dod = p.get('dod');
+      if (dod) {
+        if (!/^FY\d{4}\/[A-Za-z0-9_.\-]+\.(pdf|xlsx?)$/.test(dod)) {
+          throw new Error('?dod: sallittu muoto FY2027/<tiedosto>.pdf|xlsx');
+        }
+        const url = `https://comptroller.war.gov/Portals/45/Documents/defbudget/${dod}`;
+        const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (ACI-policy-proxy/1.0)', Accept: '*/*' } });
+        if (!r.ok) throw new UpstreamError(`DoD comptroller ${dod}: ${r.status}`, r.status === 404 ? 404 : 502);
+        return new Response(await r.arrayBuffer(), { headers: { ...CORS,
+          'Content-Type': r.headers.get('content-type') || 'application/octet-stream',
+          'X-Upstream': url, 'X-Source': 'US DoD Comptroller (julkinen budjettiasiakirja)' } });
+      }
+      const usa = p.get('usa');
+      if (usa) {
+        if (!/^(search|references)\/[a-z0-9_\/]*$/.test(usa)) {
+          throw new Error('?usa: vain search/… ja references/… sallittu');
+        }
+        const url = `https://api.usaspending.gov/api/v2/${usa}${usa.endsWith('/') ? '' : '/'}`;
+        const init = { method: req.method === 'POST' ? 'POST' : 'GET',
+          headers: { 'User-Agent': UA, Accept: 'application/json', 'Content-Type': 'application/json' } };
+        if (init.method === 'POST') init.body = await req.text();
+        const r = await fetch(url, init);
+        const text = await r.text();
+        if (!r.ok) throw new UpstreamError(`USAspending ${usa}: ${r.status} ${text.slice(0, 300)}`, r.status === 404 ? 404 : 502);
+        return Response.json({ upstream: url, source: 'USAspending.gov (US Treasury)',
+          data_class: 'authoritative (liittovaltion menokirjanpito)', fetched: new Date().toISOString(),
+          data: JSON.parse(text) }, { headers: CORS });
+      }
+
       const doc = p.get('doc');
       if (doc) {
         let target;
