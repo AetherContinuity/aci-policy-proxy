@@ -360,6 +360,7 @@ function cacheTtl(p) {
   if (fx && /\/list(\?|$)/.test(fx)) return 3600;
   if (p.get('votes')) return 6 * 3600;
   if (p.get('dod')) return 30 * 86400;
+  if (p.get('gov')) return 3600;
   if (p.get('usa') && /^references\//.test(p.get('usa'))) return 86400;
   return 0;
 }
@@ -418,6 +419,19 @@ async function handle(req) {
       //   ?usa=search/spending_by_category/country/   (POST, JSON-runko välitetään)
       //   ?usa=references/toptier_agencies/          (GET)
       // Kokoamisrajaus (I, kohta 5) tehdään analyysissä: proxy ei tallenna mitään.
+      // ── Puolustushallinnon tiedotteet (lisätty 2026-11-17, ennakkokirjaus I, I4) ──
+      // ?gov=<url>  vain puolustusvoimat.fi, valtioneuvosto.fi, defmin.fi; HTML/RSS sellaisenaan.
+      // Syy: sivustot torjuvat GitHub Actionsin (403) ja työtila ei yllä niihin.
+      const gov = p.get('gov');
+      if (gov) {
+        let t; try { t = new URL(gov); } catch { throw new Error('?gov: kelvoton URL'); }
+        const ok = ['puolustusvoimat.fi', 'www.puolustusvoimat.fi', 'valtioneuvosto.fi', 'www.defmin.fi', 'defmin.fi'];
+        if (t.protocol !== 'https:' || !ok.includes(t.hostname)) throw new Error(`?gov: vain ${ok.join(', ')}`);
+        const r = await fetch(t.toString(), { headers: { 'User-Agent': 'Mozilla/5.0 (ACI-policy-proxy/1.0)', Accept: 'text/html,application/xml,*/*', 'Accept-Language': 'fi' } });
+        return new Response(await r.arrayBuffer(), { status: r.status, headers: { ...CORS,
+          'Content-Type': r.headers.get('content-type') || 'text/html', 'X-Upstream': t.toString(), 'X-Upstream-Status': String(r.status) } });
+      }
+
       const dod = p.get('dod');
       if (dod) {
         if (!/^FY\d{4}\/[A-Za-z0-9_.\-]+\.(pdf|xlsx?)$/.test(dod)) {
