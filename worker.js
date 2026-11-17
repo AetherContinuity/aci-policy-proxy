@@ -288,6 +288,15 @@ async function fetchFinlex(path, query, accept) {
   const r = await fetch(url, {
     headers: { Accept: accept || 'application/xml', 'User-Agent': UA }
   });
+  // Sopimussarjan tekstit ovat PDF-liitteinä (…/fin@/media/<n>.pdf, vaatii Accept: application/pdf).
+  // Binääri välitetään sellaisenaan: r.text() rikkoisi sen UTF-8-dekoodauksella.
+  const uct = r.headers.get('content-type') || '';
+  if (r.ok && (uct.includes('pdf') || /\.pdf$/i.test(path))) {
+    return new Response(await r.arrayBuffer(), {
+      headers: { ...CORS, 'Content-Type': 'application/pdf',
+                 'X-Upstream': url, 'X-Source': 'Finlex avoin data' }
+    });
+  }
   const text = await r.text();
   if (r.status === 429) throw new UpstreamError('Finlex 429 — rate limited, back off', 429);
   if (!r.ok) throw new UpstreamError(`Finlex ${path}: ${r.status} ${text.slice(0, 300)}`,
@@ -324,6 +333,7 @@ const INDEX = {
   },
   finlex: {
     raw: '?fx=akn/fi/act/statute/2024/123/fin@   — Akoma Ntoso XML',
+    treaty_pdf: '?fx=akn/fi/act/treaty/2024/70/fin@/media/8114.pdf&accept=application/pdf   — sopimusteksti PDF:nä (binääri); media-polku treaty-XML:n href-kentästä',
     list: '?fx=akn/fi/act/statute/list?format=json&limit=10&startYear=2026&endYear=2026&langAndVersion=fin@&page=2   — limit max 10',
     note: 'returns XML unchanged; missing statute -> HTTP 404, rate limit -> HTTP 429 (back off). '
         + 'dateIssued = vahvistus, datePublished = julkaisu. HE-viittaus vain preliminaryWork-osiosta. '
