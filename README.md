@@ -30,8 +30,34 @@ which are events and law respectively.
     GET  ?fx=akn/fi/act/statute/2024/123/fin@     Akoma Ntoso XML
     GET  ?fx=akn/fi/act/statute/list?format=json&limit=10&startYear=2026&page=2
     GET  ?votes=HE 51/2026                        täysistuntoäänestykset
+    GET  ?edkpath=kansanedustajat/1297            one MP's record (passthrough)
 
 No args returns the route index.
+
+### `?edkpath=` takes the path raw — do not URL-encode slashes
+
+The passthrough forwards the path exactly as written (see `worker.js`,
+EDUSKUNTA-PASSTHROUGH). `?edkpath=kansanedustajat/1297` works;
+`curl --data-urlencode "edkpath=kansanedustajat/1297"` sends `%2F` and
+upstream answers 404. Only the *contents* of a single path segment are
+encoded (`taysistunnot/asian-aanestykset/VNT%201%2F2026%20vp`). Verified
+2026-11-20 after a mis-encoded test was briefly mistaken for a proxy bug.
+
+### MP records: `kansanedustajat/<henkilonro>` (verified 2026-11-20)
+
+- **No list endpoint.** `kansanedustajat` and `kansanedustajat/` return 404;
+  `kansanedustajat/<word>` returns 400 (`should follow pattern ^\d+$`).
+  Records are fetched one `henkilonro` at a time, and the number space has
+  gaps (e.g. 900 → 404). A full roster needs the ids from another source
+  (e.g. `?votes=` per-MP records) rather than blind enumeration.
+- Fields include `ammatti`, `koulutukset`, `tyoura`, `edustajatoimet`,
+  `valtioneuvostonJasenyydet`, `toimielinjasenyydet`, `eduskuntaryhmat`,
+  `vaalipiirit`.
+- **`tyoura` is self-reported and often empty.** Sampled: 300 → 2 entries,
+  600 → 5, 1400 → 10, but 1100, 1297 and 1500 → 0. An empty `tyoura` means
+  "not reported", not "no work history". Any analysis of MPs' pre-politics
+  careers must treat it as missing data and report coverage, or it will
+  silently overstate party-track careers.
 
 ## kohteet/haku body fields
 
