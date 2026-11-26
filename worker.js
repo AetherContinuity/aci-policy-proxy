@@ -360,6 +360,7 @@ function cacheTtl(p) {
   if (fx && /\/list(\?|$)/.test(fx)) return 3600;
   if (p.get('votes')) return 6 * 3600;
   if (p.get('dod')) return 30 * 86400;
+  if (p.get('gov') && /doria\.fi\/bitstream\//.test(p.get('gov'))) return 30 * 86400;
   if (p.get('gov')) return 3600;
   if (p.get('usa') && /^references\//.test(p.get('usa'))) return 86400;
   return 0;
@@ -420,12 +421,15 @@ async function handle(req) {
       //   ?usa=references/toptier_agencies/          (GET)
       // Kokoamisrajaus (I, kohta 5) tehdään analyysissä: proxy ei tallenna mitään.
       // ── Puolustushallinnon tiedotteet (lisätty 2026-11-17, ennakkokirjaus I, I4) ──
-      // ?gov=<url>  vain puolustusvoimat.fi, valtioneuvosto.fi, defmin.fi; HTML/RSS sellaisenaan.
+      // ?gov=<url>  vain puolustusvoimat.fi, valtioneuvosto.fi, defmin.fi, vayla.fi, doria.fi; HTML/RSS/PDF sellaisenaan.
       // Syy: sivustot torjuvat GitHub Actionsin (403) ja työtila ei yllä niihin.
       const gov = p.get('gov');
       if (gov) {
         let t; try { t = new URL(gov); } catch { throw new Error('?gov: kelvoton URL'); }
-        const ok = ['puolustusvoimat.fi', 'www.puolustusvoimat.fi', 'valtioneuvosto.fi', 'www.defmin.fi', 'defmin.fi'];
+        const ok = ['puolustusvoimat.fi', 'www.puolustusvoimat.fi', 'valtioneuvosto.fi', 'www.defmin.fi', 'defmin.fi',
+          // Lisätty 2026-11-26: Väyläviraston tiedotteet ja julkaisuarkisto Doria (PDF:t /bitstream/…).
+          // Työtila ei yllä kumpaankaan (WebFetch client_error, curl 403). Isäntärajaus säilyy.
+          'vayla.fi', 'www.vayla.fi', 'doria.fi', 'www.doria.fi'];
         if (t.protocol !== 'https:' || !ok.includes(t.hostname)) throw new Error(`?gov: vain ${ok.join(', ')}`);
         const r = await fetch(t.toString(), { headers: { 'User-Agent': 'Mozilla/5.0 (ACI-policy-proxy/1.0)', Accept: 'text/html,application/xml,*/*', 'Accept-Language': 'fi' } });
         return new Response(await r.arrayBuffer(), { status: r.status, headers: { ...CORS,
