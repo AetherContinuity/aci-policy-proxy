@@ -436,6 +436,23 @@ async function handle(req) {
           'Content-Type': r.headers.get('content-type') || 'text/html', 'X-Upstream': t.toString(), 'X-Upstream-Status': String(r.status) } });
       }
 
+      // ── Digitraffic Marine (lisätty 2026-11-26, SM-024 § 09 talvimerenkulun ennakkokirjaus) ──
+      // ?meri=api/winter-navigation/v2/vessels | api/port-call/v1/port-calls?from=… (GET, JSON sellaisenaan)
+      // Syy: työtila ei yllä meri.digitraffic.fi:hin (CONNECT 403). Lisenssi CC BY 4.0 (Fintraffic / digitraffic.fi),
+      // joten vastauksen julkaisu on sallittua lähdemaininnalla. Polkurajaus: vain talvimerenkulku ja satamakäynnit.
+      const meri = p.get('meri');
+      if (meri) {
+        if (!/^api\/(winter-navigation|port-call)\/v\d\/[A-Za-z0-9_\-\/]+(\?[A-Za-z0-9_\-=&:.%+]*)?$/.test(meri)) {
+          throw new Error('?meri: vain api/winter-navigation/vN/… ja api/port-call/vN/…');
+        }
+        const url = `https://meri.digitraffic.fi/${meri}`;
+        const r = await fetch(url, { headers: { 'Digitraffic-User': 'ACI/aci-policy-proxy', Accept: 'application/json',
+          'Accept-Encoding': 'gzip' } });
+        return new Response(await r.arrayBuffer(), { status: r.status, headers: { ...CORS,
+          'Content-Type': r.headers.get('content-type') || 'application/json', 'X-Upstream': url,
+          'X-Upstream-Status': String(r.status), 'X-Source': 'Fintraffic / digitraffic.fi, CC BY 4.0' } });
+      }
+
       const dod = p.get('dod');
       if (dod) {
         if (!/^FY\d{4}\/[A-Za-z0-9_.\-]+\.(pdf|xlsx?)$/.test(dod)) {
